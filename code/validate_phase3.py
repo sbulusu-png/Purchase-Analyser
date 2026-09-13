@@ -23,7 +23,7 @@ CACHE_DIR = REPO_ROOT / "code" / ".cache"
 def main() -> int:
     dataset = Dataset.load(DATASET_DIR)
     vision_store = VisionAmountStore(CACHE_DIR)
-    message_store = MessageSignalStore(CACHE_DIR)
+    message_store = MessageSignalStore(CACHE_DIR, dataset)
 
     total = 0
     amount_close = 0

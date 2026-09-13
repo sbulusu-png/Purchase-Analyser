@@ -26,6 +26,10 @@ real event_id belonging to this user's own events:
 - cancel_event: excludes the matched event entirely.
 - delay_event: shifts the matched event's date to new_date.
 - confirm_event / anything else: no change.
+If more than one message targets the same event, the one with the latest
+sent_at wins (see MessageSignalStore) -- not file/cache order, since
+message_id order in this dataset doesn't reliably track chronological
+sent_at order.
 
 Recurring income and expenses ARE projected forward beyond the last known
 occurrence of each (user, category, direction) series -- see
@@ -107,15 +111,34 @@ class ForwardEvent:
     reference_event_id: Optional[str] = None
 
 
+def _parse_sent_at(sent_at: str) -> str:
+    # ISO 8601 timestamps ("...Z" or with an explicit offset) sort
+    # correctly as plain strings once "Z" is normalized to "+00:00", so a
+    # lexical comparison is enough here without needing datetime parsing
+    # (and its version-dependent "Z" support) at all.
+    return sent_at.replace("Z", "+00:00")
+
+
 class MessageSignalStore:
     """Loads code/.cache/message_signals.json once and answers, per event,
     whether a valid amend/cancel/delay signal targets it -- and separately,
     per message, what its raw signal was (used for employer-sourced salary
     change notices, which usually have no target_event_id at all since
     there's rarely an existing ledger row for a future pay rate).
+
+    When multiple messages target the same event, the one with the latest
+    `sent_at` wins, per problem_statement.md / AGENTS.md Sec 6.3's conflict
+    order ("explicit cancellation, settlement, or amendment first; then
+    newer records from the same source"): all of amend/cancel/delay are
+    equally "explicit" signals, so the tiebreak between two of them is
+    recency, not cache/file ordering. This matters in practice: message_id
+    order in this dataset does not reliably track chronological sent_at
+    order (e.g. message_02 is sent before message_01), so picking "the
+    last one seen" instead of "the newest one" can silently apply a
+    stale, superseded instruction.
     """
 
-    def __init__(self, cache_dir: str | Path):
+    def __init__(self, cache_dir: str | Path, dataset: Optional[Dataset] = None):
         path = Path(cache_dir) / "message_signals.json"
         self._by_message_id: dict[str, dict] = {}
         self._by_event_id: dict[str, dict] = {}
@@ -123,14 +146,16 @@ class MessageSignalStore:
             return
         with path.open("r", encoding="utf-8") as f:
             self._by_message_id = json.load(f)
-        for sig in self._by_message_id.values():
+        sent_at_by_message_id = {m.message_id: m.sent_at for m in dataset.messages} if dataset else {}
+        best_sent_at: dict[str, str] = {}
+        for message_id, sig in self._by_message_id.items():
             target = sig.get("target_event_id")
-            if target and _EVENT_ID_RE.match(str(target)):
-                # If multiple messages target the same event, the last one
-                # (by message_id ordering in the cache, effectively
-                # arbitrary) wins; this dataset has at most a couple of
-                # messages per event in practice.
+            if not target or not _EVENT_ID_RE.match(str(target)):
+                continue
+            sent_at = sent_at_by_message_id.get(message_id, "")
+            if target not in self._by_event_id or _parse_sent_at(sent_at) >= _parse_sent_at(best_sent_at[target]):
                 self._by_event_id[target] = sig
+                best_sent_at[target] = sent_at
 
     def signal_for(self, event_id: str) -> Optional[dict]:
         return self._by_event_id.get(event_id)

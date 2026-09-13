@@ -57,7 +57,7 @@ def main() -> int:
     print(f"Loading dataset from {DATASET_DIR} ...")
     dataset = Dataset.load(DATASET_DIR)
     vision_store = VisionAmountStore(CACHE_DIR)
-    message_store = MessageSignalStore(CACHE_DIR)
+    message_store = MessageSignalStore(CACHE_DIR, dataset)
 
     explain_client = None
     explain_tracker = None

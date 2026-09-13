@@ -18,7 +18,7 @@ CACHE_DIR = REPO_ROOT / "code" / ".cache"
 def main() -> int:
     dataset = Dataset.load(DATASET_DIR)
     vision_store = VisionAmountStore(CACHE_DIR)
-    message_store = MessageSignalStore(CACHE_DIR)
+    message_store = MessageSignalStore(CACHE_DIR, dataset)
 
     with (DATASET_DIR / "sample_requests.csv").open(encoding="utf-8-sig") as f:
         raw_by_id = {r["request_id"]: r for r in csv.DictReader(f)}
