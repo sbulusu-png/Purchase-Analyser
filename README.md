@@ -4,6 +4,8 @@ Starter repository for the **HackerRank Orchestrate** 24-hour hackathon (Septemb
 
 ## Buy or Wait?
 
+### Solution: Purchase Analyser
+
 Build an AI-powered financial agent that decides whether a user can safely afford a requested expense.
 
 A user may ask: **"Can I afford this laptop?"**
@@ -27,21 +29,54 @@ git clone https://github.com/interviewstreet/hackerrank-orchestrate-september26.
 cd hackerrank-orchestrate-september26
 ```
 
-Build your solution in `code/main.py`, or use another language and document its entry point clearly.
+The solution is pure-Python, stdlib only (no `pip install` required) and runs in two stages:
 
-Your solution must:
-
-- Read the input files from `dataset/`
-- Generate one prediction for every request
-- Write the final predictions to `output.csv` in the repository root
-
-Run the starter Python entry point with:
+**Stage 1 — multimodal extraction** (`code/main.py`). Resolves the 16
+blank-amount events via their linked images and turns all 215 messages
+into structured signals. Results are cached in `code/.cache/` (included
+in this submission for determinism/reproducibility — see "Note on cached
+results" below), so a fresh run replays them instantly with no API calls
+needed:
 
 ```bash
-python3 code/main.py
+python3 code/main.py --run
 ```
 
-After running your solution, confirm that `output.csv` exists in the repository root and contains the required columns and one row for every request.
+Set `FEATHERLESS_API_KEY` (message extraction, explanations) and either
+`GROQ_API_KEY` or `GEMINI_API_KEY` (vision) in a local `.env` — see
+`.env.example` — only if you want to force a live re-extraction instead
+of using the included cache.
+
+**Stage 2 — decision pipeline + output.csv** (`code/generate_output.py`).
+Runs the 90-day simulation (Phase 3), plan generation and ranking
+(Phase 4), and the grounded explanation step (Phase 5) for every row in
+`dataset/requests.csv`, then writes `output.csv` at the repo root:
+
+```bash
+python3 code/generate_output.py --explain
+```
+
+(Omit `--explain` for fully deterministic, LLM-free explanations built
+straight from the computed facts — see `code/explain.py`. `--explain`
+reuses the cached, already-grounded explanations in
+`code/.cache/explanations.json` and makes no new API calls unless that
+cache is missing an entry.)
+
+After running, confirm `output.csv` exists in the repository root with
+the required columns and exactly 250 data rows (one per row in
+`dataset/requests.csv`).
+
+### Note on cached results
+
+`code/.cache/vision_extractions.json`, `message_signals.json`, and
+`explanations.json` are included in this submission deliberately: they
+are the actual results (not intermediate scratch state) that produced
+the submitted `output.csv`, and including them means the pipeline is
+exactly reproducible without live API access — notably because the
+originally-used Groq vision model was deprecated by the provider after
+extraction was completed, so a from-scratch rerun cannot exactly
+reproduce Stage 1 today. `evaluation/usage_report.md` documents the real
+token usage recorded during the run that produced these files.
 
 ## Important File Locations
 
