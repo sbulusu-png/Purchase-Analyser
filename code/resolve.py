@@ -53,7 +53,14 @@ concrete new pay rate and effective date (e.g. "monthly salary increased
 to X, effective <date>") override the *amount* of the generic salary
 projection from that date forward, since the generic projection only
 knows the historical average and would otherwise miss a confirmed raise
-or cut entirely.
+or cut entirely. Two more employer-message cases -- a full stop
+("employment/seasonal contract has ended", no continuing amount given)
+and a same-day correction ("remaining confirmed salary is X", no future
+effective date given) -- are also detected and applied, since neither
+carries the (new_amount, new_date) pair the above override needs, and
+neither is visible in financial_events.csv itself when the event rows
+were never updated to reflect it. See the salary-discontinuation block
+below for details.
 """
 
 from __future__ import annotations
@@ -295,13 +302,47 @@ def resolve_user_events(
     # a fix that trades one wrong answer for two others.
     discontinuity_markers = ("final", "previous employer", "before leave")
     salary_occs = credit_occurrences_by_category.get("salary", [])
-    salary_discontinued = bool(salary_occs) and any(
+    description_discontinued = bool(salary_occs) and any(
         marker in max(salary_occs, key=lambda o: o.event_date).description.lower()
         for marker in discontinuity_markers
     )
+
+    # The description-based check above only catches discontinuation when
+    # financial_events.csv's own last salary row was updated to say so. This
+    # dataset also has two employer-message templates (English and
+    # Indonesian) that announce the *same* fact -- "seasonal contract has
+    # ended" / "employment has ended", with no continuing income confirmed
+    # -- for users whose event rows were never updated at all, which the
+    # description check silently misses. A second, distinct template
+    # ("one household income source has ended; the remaining confirmed
+    # monthly salary is X") isn't a full stop -- it gives a concrete
+    # ongoing amount, just with no explicit future effective date, so the
+    # employer-raise loop below (which requires a new_date) was skipping it
+    # too. Both were found by hand-checking every employer message
+    # containing "ended"/"berakhir" against message_signals.json: every
+    # match with new_amount == None is a full stop, every match with a
+    # new_amount is a same-day amount correction -- confirmed against the
+    # actual 250-request dataset, not assumed.
+    message_salary_discontinued = False
+    message_salary_override: Optional[tuple[float, str]] = None
+    for message in dataset.messages_by_user.get(user_id, []):
+        if message.source_type != "employer":
+            continue
+        signal = message_store.signal_for_message(message.message_id)
+        if not signal or signal.get("intent") != "new_fact":
+            continue
+        text = message.message_text.lower()
+        if "ended" not in text and "berakhir" not in text:
+            continue
+        if signal.get("new_amount") is None:
+            message_salary_discontinued = True
+        elif not signal.get("new_date"):
+            message_salary_override = (float(signal["new_amount"]), signal.get("new_currency") or home_currency)
+
+    salary_discontinued = description_discontinued or message_salary_discontinued
     other_credit_categories = (
         {c: v for c, v in credit_occurrences_by_category.items() if c != "salary"}
-        if salary_discontinued
+        if (salary_discontinued or message_salary_override)
         else credit_occurrences_by_category
     )
     for occ in project_recurring(other_credit_categories, forecast_end, min_occurrences=2, conservative="mean"):
@@ -314,6 +355,34 @@ def resolve_user_events(
                 event_id=None, description=f"projected recurring {occ.category}",
             )
         )
+
+    # A message-confirmed salary correction with no future effective date
+    # (see above) takes effect immediately, not on a future date -- so
+    # project it at the user's own salary cadence from their last known
+    # occurrence, the same way the generic projection above would have,
+    # just at the corrected amount instead of the historical mean.
+    if message_salary_override and not salary_discontinued:
+        override_amount, override_currency = message_salary_override
+        salary_dates = sorted(o.event_date for o in salary_occs)
+        gaps = [(salary_dates[i] - salary_dates[i - 1]).days for i in range(1, len(salary_dates))]
+        gaps = [g for g in gaps if g > 0]
+        period_days = round(statistics.median(gaps)) if gaps else 30
+        last = max(salary_occs, key=lambda o: o.event_date)
+        next_date = last.event_date + timedelta(days=period_days)
+        while next_date <= forecast_end:
+            if next_date >= request_date:
+                home_amount = convert_nearest(
+                    dataset, override_amount, override_currency, home_currency, next_date.isoformat()
+                )
+                forward_events.append(
+                    ForwardEvent(
+                        event_date=next_date, delta=home_amount, category="salary",
+                        flexibility=last.flexibility, minimum_allowed_amount=last.minimum_allowed_amount,
+                        event_id=None, description="projected recurring salary (corrected per message)",
+                        reference_event_id=last.template_event_id or last.event_id,
+                    )
+                )
+            next_date += timedelta(days=period_days)
 
     # An employer-sourced message stating a concrete new pay rate and
     # effective date (e.g. "monthly salary increased to X, effective
